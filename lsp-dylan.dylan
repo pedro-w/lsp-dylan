@@ -208,7 +208,7 @@ define function apply-change
     show-error(session, "didChange doesn't support ranges yet");
   else
     local-log("document replaced: %s", document.document-uri);
-    show-info(session, "Document content replaced");
+    show-log(session, "Document content replaced");
     document-lines(document) := split-lines(text);
   end;
 end function;
