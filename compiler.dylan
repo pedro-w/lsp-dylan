@@ -42,19 +42,26 @@ define function open-project
   project
 end function;
 
-
-define function describe-symbol (symbol-name)
-  let env = get-environment-object(symbol-name, module: *module*);
-  environment-object-description(*project*, env, *module*)
+// Describe a symbol if the symbol can be found in this module
+// Param: symbol-name - a string
+// Key: module - the module
+// Returns: a description or #f if there was none
+define function describe-symbol (symbol-name, #key module)
+  let env = get-environment-object(symbol-name, module: module);
+  if (env)
+    environment-object-description(*project*, env, module)
+  end if;
 end;
 
+// Find the location of a symbol's definition
+// Param: symbol-name - a string
+// Key: module - the module
+// Returns: a source location or #f if there was none defined in this module.
 define function symbol-location
     (symbol-name :: <string>, #key module)
   let env = get-environment-object(symbol-name, module: module);
   if (env)
     environment-object-source-location(*project*, env)
-  else
-    local-log("No environment object for %s in module %s", symbol-name, module);
   end
 end function;
 

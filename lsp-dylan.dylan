@@ -28,6 +28,12 @@ define constant $message-type-warning = 2;
 define constant $message-type-info = 3;
 define constant $message-type-log = 4;
 
+define variable *escape-html* :: <boolean> = #f;
+
+// Notify the client that we want to show a message.
+// Convenience functions show-error, show-warning, show-info and show-log
+// are defined below.
+// See https://microsoft.github.io/language-server-protocol/specifications/specification-3-16/#window_showMessage
 define method window/show-message
     (msg-type :: <integer>, session :: <session>, fmt :: <string>, #rest args) => ()
   let msg = apply(format-to-string, fmt, args);
@@ -40,6 +46,8 @@ define constant show-warning = curry(window/show-message, $message-type-warning)
 define constant show-info    = curry(window/show-message, $message-type-info);
 define constant show-log     = curry(window/show-message, $message-type-log);
 
+// Make JSON for a range object
+// See https://microsoft.github.io/language-server-protocol/specifications/specification-3-16/#range
 define function make-range(start, endp)
   json("start", start, "end", endp);
 end function;
@@ -74,6 +82,9 @@ define function make-markup (txt, #key markdown)
              else
                "plaintext"
              end;
+  if (*escape-html*)
+    txt := escape-html(txt)
+  end;
   json("value", txt,
        "kind", kind)
 end function;
@@ -93,6 +104,20 @@ define function handle-workspace/symbol (session :: <session>,
   send-response(session, id, symbols);
 end function;
 
+define function escape-html
+    (input :: <string>) => (output :: <string>)
+  with-output-to-string (stm)
+    for (i in input)
+      select (i)
+        '<' => write(stm, "&lt;");
+        '>' => write(stm, "&gt;");
+        '&' => write(stm, "&amp;");
+        otherwise => write-element(stm, i);
+      end;
+    end;
+  end;
+end function;
+
 // Show information about a symbol when we hover the cursor over it
 // See: https://microsoft.github.io/language-server-protocol/specifications/specification-3-15/#textDocument_hover
 // Parameters: textDocument, position, (optional) workDoneToken
@@ -104,16 +129,30 @@ define function handle-textDocument/hover
   let uri = text-document["uri"];
   let position = params["position"];
   let (line, column) = decode-position(position);
-  let doc = $documents[uri];
-  let symbol = symbol-at-position(doc, line, column);
-  if (symbol)
-    let txt = format-to-string("textDocument/hover %s (%d/%d)", symbol, line + 1, column + 1);
-    let hover = json("contents", make-markup(txt, markdown: #f));
-    send-response(session, id, hover);
+  let doc = element($documents, uri, default: #f);
+  if (~doc)
+    local-log("textDocument/definition: document not found: %=", uri);
+    show-error(session, format-to-string("Document not found: %s", uri));
   else
-    // No symbol found (probably out of range)
-    send-response(session, id, #f);
-  end;
+    unless (doc.document-module)
+      let local-dir = make(<directory-locator>, path: locator-path(doc.document-uri));
+      let local-file = make(<file-locator>,
+                            directory: local-dir,
+                            name: locator-name(doc.document-uri));
+      let (mod, lib) = file-module(*project*, local-file);
+      local-log("textDocument/definition: module=%s, library=%s", mod, lib);
+      doc.document-module := mod;
+    end;
+    let symbol = symbol-at-position(doc, line, column);
+    let hover = if (symbol)
+                  let txt = describe-symbol(symbol, module: doc.document-module);
+                  if (txt)
+                    local-log("Description: %s", txt);
+                    json("contents", make-markup(txt, markdown: #f));
+                  end;
+                end;
+    send-response(session, id, hover);
+  end if;
 end function;
 
 define function handle-textDocument/didOpen
@@ -409,6 +448,16 @@ define function handle-initialize
   end select;
   local-log("handle-initialize: debug: %s, messages: %s, verbose: %s",
             *debug-mode*, *trace-messages*, *trace-verbose*);
+  // Currently for VSCode we need to do some extra work escaping <, > and &
+  // in the hover text. See https://github.com/microsoft/vscode-languageserver-node/issues/768
+  let client-info = element(params, "clientInfo", default: #f);
+  if (client-info)
+    let name = client-info["name"];
+    // In the future, check the version also.
+    if (name = "Visual Studio Code")
+      *escape-html* := #t;
+    end;
+  end;
 
   // Save the workspace root (if provided) for later.
   // rootUri takes precedence over rootPath if both are provided.
@@ -422,8 +471,8 @@ define function handle-initialize
   local-log("handle-initialize: Working directory is now %s", working-directory());
 
   // Return the capabilities of this server
-  let capabilities = json("hoverProvider", #f,
-                          "textDocumentSync", 1,
+  let capabilities = json("hoverProvider", #t,
+                          "textDocumentSync", 1, // This means TextDocumentSyncKind.Full
                           "definitionProvider", #t,
                           "workspaceSymbolProvider", #t);
   let response-params = json("capabilities", capabilities);
@@ -760,7 +809,7 @@ define function main
   end;
 end function;
 
-ignore(*library*, run-compiler, describe-symbol, list-all-package-names,
+ignore(*library*, run-compiler, list-all-package-names,
        document-lines-setter, unregister-file,
        one-off-debug, dump, show-warning, show-log, show-error);
 
